@@ -1,4 +1,6 @@
 import argparse
+import csv
+import io
 import json
 import xml.etree.ElementTree as ET
 
@@ -54,6 +56,41 @@ def apply_filters(events, image=None, cmdline=None, user=None, integrity=None):
     return events
 
 
+FIELDS = [
+    "EventID", "UtcTime", "Image", "CommandLine", "User",
+    "IntegrityLevel", "ParentImage", "ParentCommandLine", "Computer", "Hashes",
+]
+
+
+# This stats feature is for quick triage to understand what's in a file before deep analysis
+def compute_stats(events):
+    from collections import Counter
+    integrity_counts = Counter(e.get("IntegrityLevel") or "Unknown" for e in events)
+    return {
+        "total_events": len(events),
+        "unique_processes": len({e.get("Image") for e in events if e.get("Image")}),
+        "unique_users": len({e.get("User") for e in events if e.get("User")}),
+        "events_by_integrity_level": dict(integrity_counts),
+    }
+
+
+def output_events(events, fmt, any_filter):
+    if fmt == "jsonl":
+        for event in events:
+            print(json.dumps(event))
+    elif fmt == "csv":
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=FIELDS, extrasaction="ignore", lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(events)
+        print(buf.getvalue(), end="")
+    else:  # json
+        if not any_filter and len(events) == 1:
+            print(json.dumps(events[0], indent=2))
+        else:
+            print(json.dumps(events, indent=2))
+
+
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description="Parse Sysmon Event ID 1 XML files")
     arg_parser.add_argument("files", nargs="+", metavar="FILE")
@@ -62,6 +99,10 @@ if __name__ == "__main__":
     arg_parser.add_argument("--user",      metavar="TEXT",  help="keep events where User matches exactly")
     arg_parser.add_argument("--integrity", metavar="LEVEL", choices=["High", "Medium", "Low", "System"],
                             help="keep events matching IntegrityLevel")
+    arg_parser.add_argument("--format",    metavar="FMT",   choices=["json", "jsonl", "csv"], default="json",
+                            help="output format: json (default), jsonl, or csv")
+    arg_parser.add_argument("--stats",     action="store_true",
+                            help="print summary statistics instead of events")
     args = arg_parser.parse_args()
 
     all_events = []
@@ -73,9 +114,9 @@ if __name__ == "__main__":
             all_events.append(parsed)
 
     filtered = apply_filters(all_events, args.image, args.cmdline, args.user, args.integrity)
-
     any_filter = args.image or args.cmdline or args.user or args.integrity
-    if not any_filter and len(filtered) == 1:
-        print(json.dumps(filtered[0], indent=2))
+
+    if args.stats:
+        print(json.dumps(compute_stats(filtered), indent=2))
     else:
-        print(json.dumps(filtered, indent=2))
+        output_events(filtered, args.format, any_filter)
